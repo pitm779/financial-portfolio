@@ -13,9 +13,9 @@ class AssetType(str, Enum):
     ETF = "ETF"
 
 class TransactionType(str, Enum):
-    BUY = "Buy"
-    SELL = "Sell"
-    DIVIDEND = "Dividend"
+    BUY = "BUY"
+    SELL = "SELL"
+    DIVIDEND = "DIVIDEND"
     INTEREST = "Interest"
     DEPOSIT = "Deposit"
     WITHDRAWAL = "Withdrawal"

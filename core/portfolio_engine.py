@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from sqlmodel import Session, select
 import database.tables as tables
 from core.price_fetcher import get_current_price
@@ -10,14 +10,13 @@ class PositionSummary:
     quantity: float
     avg_cost: float
     current_price: float
+    market_value: float = field(init=False)
+    unrealized_profit: float = field(init=False)
 
-    @property
-    def market_value(self) -> float:
-        return self.quantity * self.current_price
+    def __post_init__(self):
+        self.market_value = self.quantity * self.current_price
+        self.unrealized_profit = (self.current_price - self.avg_cost) * self.quantity
 
-    @property
-    def unrealized_profit(self) -> float:
-        return (self.current_price - self.avg_cost) * self.quantity
 
 
 def calculate_assets(session: Session):
@@ -35,9 +34,10 @@ def calculate_assets(session: Session):
                 total_qty += i.quantity
                 total_cost += (i.price_per_unit * i.quantity) + i.fee
             elif i.transaction_type == tables.TransactionType.SELL:
-                avg_cost = total_cost / total_qty
-                total_qty -= i.quantity
-                total_cost -= (avg_cost * i.quantity)
+                if total_qty > 0:
+                    avg_cost = total_cost / total_qty
+                    total_qty -= i.quantity
+                    total_cost -= (avg_cost * i.quantity)
 
         if total_qty > 0:
             avg_cost = total_cost / total_qty
