@@ -9,8 +9,86 @@ import pandas as pd
 from core.borker_parser import parse_xtb_excel
 
 init_db()
+st.set_page_config(page_title="Financial Portfolio", layout="wide")
 
-tab1, tab2, tab3, tab4 = st.tabs(["📈 Portfolio", "Add Asset", "Transaction", "Import Statement"])
+st.markdown(
+    """
+    <style>
+    [data-testid="stMainBlockContainer"] {
+        padding-top: 2rem !important;    /* Góra: zmniejszona z 2rem do 1rem */
+        padding-bottom: 2rem !important; /* Dół */
+        padding-left: 2rem !important;   /* Lewo */
+        padding-right: 2rem !important;  /* Prawo */
+        height: 100% !important;
+    }
+    /* Target ONLY the DataFrame within the transactions container */
+    .st-key-transactions_table_wrapper [data-testid="stDataFrame"] {
+        height: 75vh !important;
+    }
+
+    .st-key-transactions_table_wrapper [data-testid="stDataFrame"] > div {
+        height: 100% !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+tab1, tab2, tab3, tab4 = st.tabs(["📈 Portfolio", "Assets", "Transactions", "Import Statement"])
+
+@st.dialog("Add New Asset")
+def add_asset_dialog():
+    with st.form("add_asset_form"):
+            ticker = st.text_input("Ticker Symbol").upper()
+            asset_type = st.selectbox("Asset Type", [i.value for i in tables.AssetType])
+            currency = st.selectbox("Currency", ["PLN"])
+     
+            submitted = st.form_submit_button("Save Asset")
+            if submitted:
+                with Session(engine) as session:
+                    new_asset = tables.Asset(
+                        ticker=ticker, 
+                        name="name", 
+                        asset_type=tables.AssetType(asset_type), 
+                        currency=currency
+                    )
+                    session.add(new_asset)
+                    session.commit()
+                    st.success(f"Added {ticker}")
+                    st.rerun()
+
+@st.dialog("Add New Transaction")
+def add_transaction_dialog():
+    with Session(engine) as session:
+            assets = session.exec(select(tables.Asset)).all()
+            asset_map = {a.ticker: a.id for a in assets}
+    
+    with st.form("add_transaction_form"):
+                    asset_id = st.selectbox("Asset Ticker", list(asset_map.keys()))
+                    transaction_type = st.selectbox("Transaction Type", [i.value for i in tables.TransactionType])
+                    quantity = st.number_input("Quantity")
+                    price_per_unit = st.number_input("Price Per Unit")
+                    fee = st.number_input("Fee")
+                    currency = st.selectbox("Currency", ["PLN"])
+                    timestamp = st.datetime_input("Date")
+            
+                    submitted = st.form_submit_button("Save Transaction")
+                    if submitted:
+                        with Session(engine) as session:
+                            new_transaction = tables.Transactions(
+                                asset_id=asset_map[asset_id], 
+                                transaction_type=tables.TransactionType(transaction_type),
+                                quantity=quantity,
+                                price_per_unit=price_per_unit,
+                                fee=fee,
+                                currency=currency,
+                                timestamp=timestamp
+                            )
+                            session.add(new_transaction)
+                            session.commit()
+                            st.success(f"Added transaction on {ticker}")
+                            st.rerun()
+    
 
 with tab1:
     if st.button("Refresh"):
@@ -64,52 +142,66 @@ with tab1:
         else:
             st.info("No active positions found. Add an asset and a transaction to get started!")
 with tab2:
-    with st.form("add_asset_form"):
-        ticker = st.text_input("Ticker Symbol").upper()
-        asset_type = st.selectbox("Asset Type", [i.value for i in tables.AssetType])
-        currency = st.selectbox("Currency", ["PLN"])
+    col_title, col_btn = st.columns([4, 1])
+    with col_title:
+        st.subheader("Assets")
+    with col_btn:
+        if st.button("Add Asset", type="primary", use_container_width=True):
+            add_asset_dialog()
 
-        submitted = st.form_submit_button("Save Asset")
-        if submitted:
-            with Session(engine) as session:
-                new_asset = tables.Asset(
-                    ticker=ticker, 
-                    name="name", 
-                    asset_type=tables.AssetType(asset_type), 
-                    currency=currency
-                )
-                session.add(new_asset)
-                session.commit()
-                st.success(f"Added {ticker}")
-with tab3:
+    with Session(engine) as session:
+            portfolio = calculate_assets(session)
+            if portfolio:
+                total_val = sum(pos.market_value for pos in portfolio)
+                total_pnl = sum(pos.unrealized_profit for pos in portfolio)
+                
+                col1, col2 = st.columns(2)
+                col1.metric("Total Market Value", f"{total_val:,.2f} PLN")
+                col2.metric("Unrealized Profit", f"{total_pnl:,.2f} PLN")
+                
+                st.dataframe(portfolio, use_container_width=True)
+    
+with tab3:   
     with Session(engine) as session:
         assets = session.exec(select(tables.Asset)).all()
         asset_map = {a.ticker: a.id for a in assets}
 
-    with st.form("add_transaction_form"):
-            asset_id = st.selectbox("Asset Ticker", list(asset_map.keys()))
-            transaction_type = st.selectbox("Transaction Type", [i.value for i in tables.TransactionType])
-            quantity = st.number_input("Quantity")
-            price_per_unit = st.number_input("Price Per Unit")
-            fee = st.number_input("Fee")
-            currency = st.selectbox("Currency", ["PLN"])
-            timestamp = st.datetime_input("Date")
-    
-            submitted = st.form_submit_button("Save Transaction")
-            if submitted:
-                with Session(engine) as session:
-                    new_transaction = tables.Transactions(
-                        asset_id=asset_map[asset_id], 
-                        transaction_type=tables.TransactionType(transaction_type),
-                        quantity=quantity,
-                        price_per_unit=price_per_unit,
-                        fee=fee,
-                        currency=currency,
-                        timestamp=timestamp
-                    )
-                    session.add(new_transaction)
-                    session.commit()
-                    st.success(f"Added transaction on {ticker}")
+    col_title, col_btn = st.columns([4, 1])
+    with col_title:
+        st.subheader("Transactions")
+    with col_btn:
+        if st.button("Add Transaction", type="primary", use_container_width=True):
+            add_transaction_dialog()
+
+    with st.container(key="transactions_table_wrapper"):
+        with Session(engine) as session:
+            tx_stmt = select(tables.Transactions, tables.Asset).join(tables.Asset).order_by(tables.Transactions.timestamp.desc())
+            results = session.exec(tx_stmt).all()
+
+            if results:
+                formatted_transactions = []
+                for tx, asset in results:
+                    tx_type = tx.transaction_type.value if hasattr(tx.transaction_type, 'value') else str(tx.transaction_type)
+                    total_value = (tx.quantity * tx.price_per_unit) + tx.fee
+
+                    formatted_transactions.append({
+                        "ID": tx.id,
+                        "Date": tx.timestamp.strftime("%Y-%m-%d") if hasattr(tx.timestamp, 'strftime') else str(tx.timestamp)[:10],
+                        "Ticker": asset.ticker,
+                        "Type": tx_type,
+                        "Quantity": round(tx.quantity, 6),
+                        "Price / Unit": f"{tx.price_per_unit:,.2f} {tx.currency}",
+                        "Fee": f"{tx.fee:,.2f} {tx.currency}",
+                        "Total Value": f"{total_value:,.2f} {tx.currency}",
+                        "Notes": tx.notes or ""
+                    })
+
+                tx_df = pd.DataFrame(formatted_transactions)
+                
+                st.dataframe(tx_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No transactions found. Click 'Add Transaction' or import a broker statement to get started!")
+
 with tab4:
     st.subheader("📤 Import Broker Statement")
     
