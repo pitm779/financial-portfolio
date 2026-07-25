@@ -24,6 +24,8 @@ class TransactionType(str, Enum):
     SPLIT = "Split"
 
 class Asset(SQLModel, table = True):
+    __table_args__ = {"extend_existing": True}
+    
     id: Optional[int] = Field(default = None, primary_key = True)
     ticker: str = Field(index = True)
     name: str
@@ -33,6 +35,8 @@ class Asset(SQLModel, table = True):
     transactions: List["Transactions"] = Relationship(back_populates = "asset")
 
 class Transactions(SQLModel, table = True):
+    __table_args__ = {"extend_existing": True}
+
     id: Optional[int] = Field(default = None, primary_key = True)
     asset_id: int = Field(foreign_key = "asset.id")
     transaction_type: TransactionType = Field(index = True)
@@ -47,6 +51,8 @@ class Transactions(SQLModel, table = True):
     asset: Optional[Asset] = Relationship(back_populates = "transactions")
 
 class PriceHistory(SQLModel, table = True):
+    __table_args__ = {"extend_existing": True}
+
     id: Optional[int] = Field(default = None, primary_key = True)
     ticker: str = Field(index = True)
     price_date: date = Field(index = True)

@@ -1,7 +1,7 @@
 import streamlit as st
 from database.connection import init_db, engine
 from sqlmodel import Session, select
-from core.portfolio_engine import calculate_assets
+from core.portfolio_engine import calculate_assets, calculate_portfolio_history
 import database.tables as tables
 from datetime import date, timedelta
 from core.price_fetcher import get_history_price
@@ -17,6 +17,7 @@ with tab1:
         st.rerun()
     with Session(engine) as session:
         portfolio = calculate_assets(session)
+        all_transactions = session.exec(select(tables.Transactions)).all()
         if portfolio:
             total_val = sum(pos.market_value for pos in portfolio)
             total_pnl = sum(pos.unrealized_profit for pos in portfolio)
@@ -50,25 +51,13 @@ with tab1:
             elif timeframe == "YTD":
                 start_date = date(end_date.year, 1, 1)
 
-            tickers = [pos.ticker for pos in portfolio]
+            tickers = list(set([tx.asset.ticker for tx in all_transactions if tx.asset]))
             
             with st.spinner("Fetching historical market data..."):
                 prices_df = get_history_price(tickers, start_date, end_date)
 
             if not prices_df.empty:
-                if isinstance(prices_df, pd.Series):
-                    prices_df = prices_df.to_frame(name=tickers[0])
-
-                qty_map = {pos.ticker: pos.quantity for pos in portfolio}
-                value_df = pd.DataFrame(index=prices_df.index)
-
-                for ticker in tickers:
-                    if ticker in prices_df.columns:
-                        value_df[ticker] = prices_df[ticker] * qty_map[ticker]
-
-                value_df = value_df.ffill().bfill()
-                total_series = value_df.sum(axis=1)
-
+                total_series = calculate_portfolio_history(all_transactions, start_date, end_date, prices_df)
                 st.line_chart(total_series)
             else:
                 st.warning("Could not fetch historical price data for the selected timeframe.")                
