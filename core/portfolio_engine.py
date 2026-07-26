@@ -58,8 +58,6 @@ def calculate_portfolio_history(all_transactions, start_date, end_date, prices_d
 
     tx_records = []
     for tx in all_transactions:
-        if not tx.asset:
-            continue
         tx_type_str = tx.transaction_type.value if hasattr(tx.transaction_type, 'value') else str(tx.transaction_type)
         if tx_type_str in ["BUY", "SELL"]:
             tx_records.append({
@@ -94,20 +92,49 @@ def calculate_portfolio_history(all_transactions, start_date, end_date, prices_d
 
     if isinstance(prices_df, pd.Series):
         prices_df = prices_df.to_frame(name=all_tickers[0])
-
     if isinstance(prices_df.columns, pd.MultiIndex):
         prices_df.columns = prices_df.columns.get_level_values(-1)
 
     prices_df.index = pd.to_datetime(prices_df.index).tz_localize(None)
+    holdings_trading_days = holdings_df.reindex(
+        prices_df.index, method="ffill"
+    ).fillna(0.0)
 
-    holdings_trading_days = holdings_df.reindex(prices_df.index, method="ffill").fillna(0.0)
-
-    common_cols = [c for c in prices_df.columns if c in holdings_trading_days.columns]
+    common_cols = [
+        c for c in prices_df.columns if c in holdings_trading_days.columns
+    ]
     daily_values = prices_df[common_cols] * holdings_trading_days[common_cols]
     daily_values = daily_values.ffill().bfill()
+    portfolio_series = daily_values.sum(axis=1)
 
-    daily_values_window = daily_values.loc[start_ts:end_ts]
-    return daily_values_window.sum(axis=1)
+    cash_changes = pd.Series(0.0, index=full_date_range)
+
+    for tx in all_transactions:
+        tx_type_str = (
+            tx.transaction_type.value
+            if hasattr(tx.transaction_type, "value")
+            else str(tx.transaction_type)
+        ).lower()
+        if tx_type_str in ["deposit", "withdrawal"]:
+            tx_date = pd.to_datetime(tx.timestamp).tz_localize(None).normalize()
+            if tx_date in cash_changes.index:
+                amount = float(tx.price_per_unit * tx.quantity)
+                if tx_type_str == "deposit":
+                    cash_changes.loc[tx_date] += abs(amount)
+                elif tx_type_str == "withdrawal":
+                    cash_changes.loc[tx_date] -= abs(amount)
+
+    prices_df.index = pd.to_datetime(prices_df.index).tz_localize(None)
+    cumulative_cash = (
+        cash_changes.cumsum().reindex(prices_df.index, method="ffill").fillna(0.0)
+    )
+
+    history_df = pd.DataFrame({
+        "Portfolio Value": portfolio_series,
+        "Net Cash Flow": cumulative_cash,
+    })
+
+    return history_df.loc[start_ts:end_ts]
 
 def get_asset_type_summary(portfolio: list):
     unique_types = [item.value for item in tables.AssetType]

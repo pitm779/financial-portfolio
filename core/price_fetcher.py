@@ -13,7 +13,8 @@ def get_history_price(tickers: list[str], start_date: date, end_date: date) -> p
         tickers=tickers,
         start=start_date,
         end=end_date,
-        interval="1d"
+        interval="1d",
+        auto_adjust=False
     )
 
     return df["Close"]

@@ -189,12 +189,14 @@ with tab1:
             
             timeframe = st.selectbox(
                 "Select Timeframe", 
-                ["1 Month", "3 Months", "6 Months", "1 Year", "5 Year", "YTD"], 
-                index=1
+                ["All Time", "1 Month", "3 Months", "6 Months", "1 Year", "5 Year", "YTD"], 
+                index=0
             )
             
             end_date = date.today()
-            if timeframe == "1 Month":
+            if timeframe == "All Time":
+                start_date = min(pd.to_datetime(tx.timestamp) for tx in all_transactions).date()
+            elif timeframe == "1 Month":
                 start_date = end_date - timedelta(days=30)
             elif timeframe == "3 Months":
                 start_date = end_date - timedelta(days=90)
