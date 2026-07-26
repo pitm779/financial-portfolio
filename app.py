@@ -124,13 +124,49 @@ with st.sidebar:
                 cash_val += (tx.quantity * tx.price_per_unit) - tx.tax
 
         summary_items = [
-            {"Metric": "Account Value", "Value": f"{total_val:,.2f} PLN"},
             {"Metric": "Open Positions", "Value": f"{total_val:,.2f} PLN"},
             {"Metric": "Cash", "Value": f"{cash_val:,.2f} PLN"},
             {"Metric": "Unrealized Profit", "Value": f"{total_pnl:,.2f} PLN"},
             {"Metric": "Dividends Received", "Value": f"{dividends:,.2f} PLN"},
         ]
-        
+
+        current_total_portfolio = total_val + cash_val
+        delta_str = None
+        tickers = list(
+            set([
+                tx.asset.ticker
+                for tx in all_transactions
+                if tx.asset and tx.transaction_type in [tables.TransactionType.BUY, tables.TransactionType.SELL]
+            ])
+        )
+
+        if tickers:
+            end_date = date.today()
+            start_date = end_date - timedelta(days=5) 
+            
+            prices_df = get_history_price(tickers, start_date, end_date)
+            
+            if not prices_df.empty:
+                hist_series = calculate_portfolio_history(all_transactions, start_date, end_date, prices_df)
+                prev_series = hist_series[hist_series.index.date < end_date]
+                
+                if not prev_series.empty:
+                    last_row = prev_series.iloc[-1]
+                    
+                    if isinstance(last_row, (pd.Series, pd.DataFrame)):
+                        prev_market_val = float(last_row.values[0])
+                    else:
+                        prev_market_val = float(last_row)
+                    prev_total_portfolio = prev_market_val + cash_val
+                    
+                    diff = current_total_portfolio - prev_total_portfolio
+                    pct_change = (diff / prev_total_portfolio * 100) if prev_total_portfolio != 0 else 0.0
+                    
+                    delta_str = f"{diff:+,.2f} PLN ({pct_change:+.2f}%) 1D"
+
+        st.metric("Total Value",f"{current_total_portfolio:,.2f} PLN", delta = delta_str)
+        st.markdown("---")
+
         df_summary = pd.DataFrame(summary_items)
         st.table(df_summary)
 
@@ -224,7 +260,26 @@ with tab1:
 
             if not prices_df.empty:
                 total_series = calculate_portfolio_history(all_transactions, start_date, end_date, prices_df)
-                st.line_chart(total_series)
+                
+                col_chart1, col_chart2, col_chart3 = st.columns(3)
+                
+                with col_chart1:
+                    st.caption("Total Market Value")
+                    st.line_chart(total_series, height=350)
+
+                with col_chart2:
+                    pass
+                with col_chart3:
+                    if isinstance(total_series, pd.DataFrame):
+                        ts = total_series.iloc[:, 0]
+                    else:
+                        ts = total_series
+
+                    running_max = ts.cummax()
+                    drawdown_series = ((ts - running_max) / running_max) * 100
+                    drawdown_series.name = "Drawdown (%)"
+                    st.caption("Portfolio Drawdown")
+                    st.line_chart(drawdown_series, height=350, color = "red")
             else:
                 st.warning("Could not fetch historical price data for the selected timeframe.")                
         else:
@@ -241,14 +296,9 @@ with tab2:
     with Session(engine) as session:
             portfolio = calculate_assets(session)
             if portfolio:
-                total_val = sum(pos.market_value for pos in portfolio)
-                total_pnl = sum(pos.unrealized_profit for pos in portfolio)
-                
-                col1, col2 = st.columns(2)
-                col1.metric("Total Market Value", f"{total_val:,.2f} PLN")
-                col2.metric("Unrealized Profit", f"{total_pnl:,.2f} PLN")
-                
                 st.dataframe(portfolio, width="stretch")
+            else:
+                st.info("No assets found. Click 'Add Asset' or import a broker statement to get started!")
     
 with tab3:   
     with Session(engine) as session:

@@ -99,13 +99,13 @@ def parse_xtb_excel(file):
 
         elif row_type in ["withdrawal"]:
             parsed_transactions.append({
-            "ticker": "PLN",
-            "transaction_type": TransactionType.WITHDRAWAL,
-            "quantity": amount,
-            "price_per_unit": 1.0,
-            "fee": 0.0,
-            "currency": "PLN",
-            "timestamp": pd.to_datetime(row["Time"]).date()
-        })
+                "ticker": "PLN",
+                "transaction_type": TransactionType.WITHDRAWAL,
+                "quantity": amount,
+                "price_per_unit": 1.0,
+                "fee": 0.0,
+                "currency": "PLN",
+                "timestamp": pd.to_datetime(row["Time"]).date()
+            })
         
     return pd.DataFrame(parsed_transactions)
