@@ -38,7 +38,7 @@ def calculate_assets(session: Session):
                     total_qty -= i.quantity
                     total_cost -= (avg_cost * i.quantity)
 
-        if total_qty > 0:
+        if total_qty > 0: 
             avg_cost = total_cost / total_qty
             current_price = get_current_price(asset.ticker) or 0
 
@@ -61,12 +61,13 @@ def calculate_portfolio_history(all_transactions, start_date, end_date, prices_d
         if not tx.asset:
             continue
         tx_type_str = tx.transaction_type.value if hasattr(tx.transaction_type, 'value') else str(tx.transaction_type)
-        tx_records.append({
-            "ticker": tx.asset.ticker,
-            "type": tx_type_str.upper(),
-            "quantity": float(tx.quantity),
-            "date": pd.to_datetime(tx.timestamp).tz_localize(None)
-        })
+        if tx_type_str in ["BUY", "SELL"]:
+            tx_records.append({
+                "ticker": tx.asset.ticker,
+                "type": tx_type_str.upper(),
+                "quantity": float(tx.quantity),
+                "date": pd.to_datetime(tx.timestamp).tz_localize(None)
+            })
 
     if not tx_records:
         return pd.Series(dtype=float)
@@ -85,7 +86,7 @@ def calculate_portfolio_history(all_transactions, start_date, end_date, prices_d
     for _, tx in df_tx.iterrows():
         tx_date = tx['date'].normalize()
         t = tx['ticker']
-        qty = tx['quantity'] if tx['type'] == "BUY" else -tx['quantity']
+        qty = tx["quantity"] if tx["type"] == "BUY" else -tx["quantity"]
         if tx_date in changes_df.index:
             changes_df.loc[tx_date, t] += qty
 
@@ -107,3 +108,48 @@ def calculate_portfolio_history(all_transactions, start_date, end_date, prices_d
 
     daily_values_window = daily_values.loc[start_ts:end_ts]
     return daily_values_window.sum(axis=1)
+
+def get_asset_type_summary(portfolio: list):
+    unique_types = [item.value for item in tables.AssetType]
+    asset_data = []
+    if portfolio:
+        for pos in portfolio:
+            raw_type = getattr(
+                pos,
+                "asset_type",
+                getattr(getattr(pos, "asset", None), "asset_type", "Other"),
+            )
+            asset_type_str = (
+                raw_type.value if hasattr(raw_type, "value") else str(raw_type)
+            )
+
+            asset_data.append({
+                "Type": asset_type_str,
+                "Market Value": float(pos.market_value or 0.0),
+                "Unrealised Profit": float(pos.unrealized_profit or 0.0),
+            })
+
+    if asset_data:
+        df_active = (
+            pd.DataFrame(asset_data).groupby("Type", as_index=False).sum()
+        )
+    else:
+        df_active = pd.DataFrame(
+            columns=["Type", "Market Value", "Unrealised Profit"]
+        )
+
+    df_master = pd.DataFrame({"Type": unique_types})
+    df_merged = pd.merge(df_master, df_active, on="Type", how="left").fillna(0.0)
+    total_val = df_merged["Market Value"].sum()
+    df_merged["% of Wallet"] = (
+        (df_merged["Market Value"] / total_val * 100) if total_val > 0 else 0.0
+    )
+
+    # Sort descending by Market Value
+    df_merged = df_merged.sort_values(
+        by="Market Value", ascending=False
+    ).reset_index(drop=True)
+
+    return df_merged[
+        ["Type", "Market Value", "% of Wallet", "Unrealised Profit"]
+    ]

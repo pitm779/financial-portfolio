@@ -1,11 +1,13 @@
 import streamlit as st
-from database.connection import init_db, engine
-from sqlmodel import Session, select
-from core.portfolio_engine import calculate_assets, calculate_portfolio_history
-import database.tables as tables
-from datetime import date, timedelta
-from core.price_fetcher import get_history_price
 import pandas as pd
+from sqlmodel import Session, select
+from datetime import date, timedelta
+import plotly.express as px
+
+from database.connection import init_db, engine
+import database.tables as tables
+from core.portfolio_engine import calculate_assets, get_asset_type_summary, calculate_portfolio_history
+from core.price_fetcher import get_history_price
 from core.borker_parser import parse_xtb_excel
 
 init_db()
@@ -14,6 +16,12 @@ st.set_page_config(page_title="Financial Portfolio", layout="wide")
 st.markdown(
     """
     <style>
+    /* Adjust tab label text size */
+    div[data-testid="stTab"] div[data-testid="stMarkdownContainer"] p {
+        font-size: 22px !important;  /* Change to your preferred font size */
+        font-weight: 600 !important; /* Optional: Make it bold for extra emphasis */
+    }
+
     [data-testid="stMainBlockContainer"] {
         padding-top: 2rem !important;    /* Góra: zmniejszona z 2rem do 1rem */
         padding-bottom: 2rem !important; /* Dół */
@@ -86,9 +94,51 @@ def add_transaction_dialog():
                             )
                             session.add(new_transaction)
                             session.commit()
-                            st.success(f"Added transaction on {ticker}")
+                            st.success(f"Added transaction")
                             st.rerun()
     
+with st.sidebar:
+    with Session(engine) as session:
+        st.subheader("Portfolio Summary")
+    
+    with Session(engine) as session:
+        portfolio = calculate_assets(session)
+        all_transactions = session.exec(select(tables.Transactions)).all()
+        
+        total_val = sum(pos.market_value for pos in portfolio) if portfolio else 0.0
+        total_pnl = sum(pos.unrealized_profit for pos in portfolio) if portfolio else 0.0
+        
+        cash_val = 0.0
+        dividends = 0.0
+        for tx in all_transactions:
+            if tx.transaction_type == tables.TransactionType.DIVIDEND:
+                dividends += (tx.quantity * tx.price_per_unit) - tx.tax
+                cash_val += (tx.quantity * tx.price_per_unit) - tx.tax
+            elif tx.transaction_type == tables.TransactionType.DEPOSIT:
+                cash_val += (tx.quantity * tx.price_per_unit)
+            elif tx.transaction_type == tables.TransactionType.WITHDRAWAL:
+                cash_val -= (tx.quantity * tx.price_per_unit)
+            elif tx.transaction_type == tables.TransactionType.BUY:
+                cash_val -= (tx.quantity * tx.price_per_unit) - tx.tax
+            elif tx.transaction_type == tables.TransactionType.SELL:
+                cash_val += (tx.quantity * tx.price_per_unit) - tx.tax
+
+        summary_items = [
+            {"Metric": "Account Value", "Value": f"{total_val:,.2f} PLN"},
+            {"Metric": "Open Positions", "Value": f"{total_val:,.2f} PLN"},
+            {"Metric": "Cash", "Value": f"{cash_val:,.2f} PLN"},
+            {"Metric": "Unrealized Profit", "Value": f"{total_pnl:,.2f} PLN"},
+            {"Metric": "Dividends Received", "Value": f"{dividends:,.2f} PLN"},
+        ]
+        
+        df_summary = pd.DataFrame(summary_items)
+        st.table(df_summary)
+
+        st.markdown("---")
+        st.caption("Currencies in Portfolio")
+        st.table(pd.DataFrame([
+            {"Currency": "PLN", "Value": f"{total_val:,.2f} PLN"}
+        ]))
 
 with tab1:
     if st.button("Refresh"):
@@ -103,8 +153,36 @@ with tab1:
             col1, col2 = st.columns(2)
             col1.metric("Total Market Value", f"{total_val:,.2f} PLN")
             col2.metric("Unrealized Profit", f"{total_pnl:,.2f} PLN")
-            
-            st.dataframe(portfolio, use_container_width=True)
+
+            col1, col2 = st.columns(2)
+            df_grouped = get_asset_type_summary(portfolio)
+
+            df_display = df_grouped.copy()
+            df_display["Market Value"] = df_display["Market Value"].apply(lambda x: f"{x:,.2f} PLN")
+            df_display["% of Wallet"] = df_display["% of Wallet"].apply(lambda x: f"{x:.2f}%")
+            df_display["Unrealised Profit"] = df_display["Unrealised Profit"].apply(lambda x: f"{x:,.2f} PLN")
+
+            st.subheader("Asset Breakdown")
+            with col1:
+                st.table(df_display)
+            with col2:
+                df_chart = df_grouped[df_grouped["Market Value"] > 0]
+                fig = px.pie(
+                    df_chart,
+                    names="Type",
+                    values="Market Value",
+                    hole=0.4,
+                    color_discrete_sequence=px.colors.qualitative.Pastel
+                )
+                
+                fig.update_traces(textinfo="percent+label", hovertemplate="%{label}: %{value:,.2f} PLN (%{percent})")
+                fig.update_layout(
+                    showlegend=False,
+                    margin=dict(t=20, b=20, l=10, r=10),
+                    height=320
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
             
             st.markdown("---")
             st.subheader("📈 Historical Performance")
@@ -125,11 +203,19 @@ with tab1:
             elif timeframe == "1 Year":
                 start_date = end_date - timedelta(days=365)
             elif timeframe == "5 Year":
-                            start_date = end_date - timedelta(days=365*5)
+                start_date = end_date - timedelta(days=365*5)
             elif timeframe == "YTD":
                 start_date = date(end_date.year, 1, 1)
 
-            tickers = list(set([tx.asset.ticker for tx in all_transactions if tx.asset]))
+            tickers = list(
+                set([
+                    tx.asset.ticker
+                    for tx in all_transactions
+                    if tx.asset
+                    and tx.transaction_type
+                    in [tables.TransactionType.BUY, tables.TransactionType.SELL]
+                ])
+            )
             
             with st.spinner("Fetching historical market data..."):
                 prices_df = get_history_price(tickers, start_date, end_date)
@@ -141,12 +227,13 @@ with tab1:
                 st.warning("Could not fetch historical price data for the selected timeframe.")                
         else:
             st.info("No active positions found. Add an asset and a transaction to get started!")
+
 with tab2:
     col_title, col_btn = st.columns([4, 1])
     with col_title:
         st.subheader("Assets")
     with col_btn:
-        if st.button("Add Asset", type="primary", use_container_width=True):
+        if st.button("Add Asset", type="primary", width="stretch"):
             add_asset_dialog()
 
     with Session(engine) as session:
@@ -159,7 +246,7 @@ with tab2:
                 col1.metric("Total Market Value", f"{total_val:,.2f} PLN")
                 col2.metric("Unrealized Profit", f"{total_pnl:,.2f} PLN")
                 
-                st.dataframe(portfolio, use_container_width=True)
+                st.dataframe(portfolio, width="stretch")
     
 with tab3:   
     with Session(engine) as session:
@@ -170,7 +257,7 @@ with tab3:
     with col_title:
         st.subheader("Transactions")
     with col_btn:
-        if st.button("Add Transaction", type="primary", use_container_width=True):
+        if st.button("Add Transaction", type="primary", width="stretch"):
             add_transaction_dialog()
 
     with st.container(key="transactions_table_wrapper"):
@@ -198,7 +285,7 @@ with tab3:
 
                 tx_df = pd.DataFrame(formatted_transactions)
                 
-                st.dataframe(tx_df, use_container_width=True, hide_index=True)
+                st.dataframe(tx_df, width="stretch", hide_index=True)
             else:
                 st.info("No transactions found. Click 'Add Transaction' or import a broker statement to get started!")
 
@@ -215,7 +302,7 @@ with tab4:
             
             if not parsed_df.empty:
                 st.markdown("### Preview Parsed Transactions")
-                st.dataframe(parsed_df, use_container_width=True)
+                st.dataframe(parsed_df, width="stretch")
                 
                 if st.button("Confirm & Save to Portfolio"):
                     with Session(engine) as session:

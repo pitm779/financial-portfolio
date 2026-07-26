@@ -17,15 +17,15 @@ class TransactionType(str, Enum):
     SELL = "SELL"
     DIVIDEND = "DIVIDEND"
     INTEREST = "Interest"
-    DEPOSIT = "Deposit"
-    WITHDRAWAL = "Withdrawal"
+    DEPOSIT = "DEPOSIT"
+    WITHDRAWAL = "WITHDRWAL"
     FEE = "Fee"
     TAX = "Tax"
     SPLIT = "Split"
 
 class Asset(SQLModel, table = True):
     __table_args__ = {"extend_existing": True}
-    
+
     id: Optional[int] = Field(default = None, primary_key = True)
     ticker: str = Field(index = True)
     name: str
