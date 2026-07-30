@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from sqlmodel import Session, select
 from datetime import date, timedelta
 import plotly.express as px
 
 from database.connection import init_db, engine
 import database.tables as tables
-from core.portfolio_engine import calculate_assets, get_asset_type_summary, calculate_portfolio_history
+from core.portfolio_engine import calculate_assets, get_asset_type_summary, calculate_portfolio_history, calculate_xirr_history
 from core.price_fetcher import get_history_price
 from core.borker_parser import parse_xtb_excel
 
@@ -42,7 +43,66 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-tab1, tab2, tab3, tab4 = st.tabs(["📈 Portfolio", "Assets", "Transactions", "Import Statement"])
+import streamlit as st
+
+st.markdown("""
+<style>
+    /* 1. Flexbox alignment for tab text container */
+    div[data-testid="stTab"] p,
+    button[data-testid="stTab"] p {
+        display: inline-flex !important;
+        align-items: center !important;
+        transition: color 0.2s ease;
+    }
+
+    /* 2. Common styling using SVG masks for dynamic coloring */
+    div[data-testid="stTab"][data-key="0"] p::before,
+    button[data-testid="stTab"][data-key="0"] p::before {
+        content: "";
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        margin-right: 8px;
+        
+        /* Default (Inactive) Icon Color */
+        background-color: #808495; 
+        
+        /* Mask properties */
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        transition: background-color 0.2s ease;
+    }
+
+    /* Tab 1 Icon: Portfolio */
+    div[data-testid="stTab"][data-key="0"] p::before,
+    button[data-testid="stTab"][data-key="0"] p::before {
+        -webkit-mask-image: url('https://api.iconify.design/lucide:trending-up.svg');
+        mask-image: url('https://api.iconify.design/lucide:trending-up.svg');
+    }
+
+    /* ---------------------------------------------------- */
+    /* 3. ACTIVE/CLICKED STATE (aria-selected="true")        */
+    /* ---------------------------------------------------- */
+    
+    /* Active Text Color */
+    div[data-testid="stTab"][aria-selected="true"] p,
+    button[data-testid="stTab"][aria-selected="true"] p {
+        color: #ff4b4b !important; /* Streamlit active red (or use 'red') */
+    }
+
+    /* Active Icon Color */
+    div[data-testid="stTab"][aria-selected="true"] p::before,
+    button[data-testid="stTab"][aria-selected="true"] p::before {
+        background-color: #ff4b4b !important; /* Matches text red */
+    }
+</style>
+""", unsafe_allow_html=True)
+
+tab1, tab2, tab3, tab4 = st.tabs(["Portfolio", "Assets", "Transactions", "Import Statement"])
 
 @st.dialog("Add New Asset")
 def add_asset_dialog():
@@ -107,6 +167,7 @@ with st.sidebar:
         
         total_val = sum(pos.market_value for pos in portfolio) if portfolio else 0.0
         total_pnl = sum(pos.unrealized_profit for pos in portfolio) if portfolio else 0.0
+        total_daily_change = sum(pos.daily_change for pos in portfolio) if portfolio else 0.0
         
         cash_val = 0.0
         dividends = 0.0
@@ -131,50 +192,24 @@ with st.sidebar:
         ]
 
         current_total_portfolio = total_val + cash_val
-        delta_str = None
-        tickers = list(
-            set([
-                tx.asset.ticker
-                for tx in all_transactions
-                if tx.asset and tx.transaction_type in [tables.TransactionType.BUY, tables.TransactionType.SELL]
-            ])
-        )
+        prev_portfolio_val = current_total_portfolio - total_daily_change
+        pct_change = (total_daily_change / prev_portfolio_val * 100) if prev_portfolio_val > 0 else 0.0
+        delta_str = f"{total_daily_change:+,.2f} PLN ({pct_change:+.2f}%) 1D" if portfolio else None
 
-        if tickers:
-            end_date = date.today()
-            start_date = end_date - timedelta(days=5) 
-            
-            prices_df = get_history_price(tickers, start_date, end_date)
-            
-            if not prices_df.empty:
-                hist_series = calculate_portfolio_history(all_transactions, start_date, end_date, prices_df)
-                prev_series = hist_series[hist_series.index.date < end_date]
-                
-                if not prev_series.empty:
-                    last_row = prev_series.iloc[-1]
-                    
-                    if isinstance(last_row, (pd.Series, pd.DataFrame)):
-                        prev_market_val = float(last_row.values[0])
-                    else:
-                        prev_market_val = float(last_row)
-                    prev_total_portfolio = prev_market_val + cash_val
-                    
-                    diff = current_total_portfolio - prev_total_portfolio
-                    pct_change = (diff / prev_total_portfolio * 100) if prev_total_portfolio != 0 else 0.0
-                    
-                    delta_str = f"{diff:+,.2f} PLN ({pct_change:+.2f}%) 1D"
-
-        st.metric("Total Value",f"{current_total_portfolio:,.2f} PLN", delta = delta_str)
+        st.metric("Total Value", f"{current_total_portfolio:,.2f} PLN", delta=delta_str)
         st.markdown("---")
 
-        df_summary = pd.DataFrame(summary_items)
-        st.table(df_summary)
+        summary_items = [
+            {"Metric": "Open Positions", "Value": f"{total_val:,.2f} PLN"},
+            {"Metric": "Cash", "Value": f"{cash_val:,.2f} PLN"},
+            {"Metric": "Unrealized Profit", "Value": f"{total_pnl:,.2f} PLN"},
+            {"Metric": "Dividends Received", "Value": f"{dividends:,.2f} PLN"},
+        ]
 
+        st.table(pd.DataFrame(summary_items))
         st.markdown("---")
         st.caption("Currencies in Portfolio")
-        st.table(pd.DataFrame([
-            {"Currency": "PLN", "Value": f"{total_val:,.2f} PLN"}
-        ]))
+        st.table(pd.DataFrame([{"Currency": "PLN", "Value": f"{total_val:,.2f} PLN"}]))
 
 with tab1:
     if st.button("Refresh"):
@@ -198,7 +233,6 @@ with tab1:
             df_display["% of Wallet"] = df_display["% of Wallet"].apply(lambda x: f"{x:.2f}%")
             df_display["Unrealised Profit"] = df_display["Unrealised Profit"].apply(lambda x: f"{x:,.2f} PLN")
 
-            st.subheader("Asset Breakdown")
             with col1:
                 st.table(df_display)
             with col2:
@@ -268,15 +302,24 @@ with tab1:
                     st.line_chart(total_series, height=350)
 
                 with col_chart2:
-                    pass
+                    xirr_series = calculate_xirr_history(all_transactions, total_series)
+                    st.caption("Rolling XIRR (%)")
+                    st.line_chart(xirr_series, height=350, color="#22c55e")
+
                 with col_chart3:
                     if isinstance(total_series, pd.DataFrame):
                         ts = total_series.iloc[:, 0]
                     else:
                         ts = total_series
 
-                    running_max = ts.cummax()
-                    drawdown_series = ((ts - running_max) / running_max) * 100
+                    if ts is not None and isinstance(ts, pd.Series) and not ts.empty:
+                        running_max = ts.cummax()
+                        # Avoid division by zero if running_max is 0
+                        drawdown = np.where(running_max > 0, (ts - running_max) / running_max * 100, 0.0)
+                        drawdown_series = pd.Series(drawdown, index=ts.index)
+                    else:
+                        drawdown_series = pd.Series(dtype=float)
+
                     drawdown_series.name = "Drawdown (%)"
                     st.caption("Portfolio Drawdown")
                     st.line_chart(drawdown_series, height=350, color = "red")
@@ -294,13 +337,63 @@ with tab2:
             add_asset_dialog()
 
     with Session(engine) as session:
-            portfolio = calculate_assets(session)
-            if portfolio:
-                st.dataframe(portfolio, width="stretch")
-            else:
-                st.info("No assets found. Click 'Add Asset' or import a broker statement to get started!")
-    
-with tab3:   
+        portfolio = calculate_assets(session)
+        if portfolio:
+            df_assets = pd.DataFrame([
+                {
+                    "ticker": pos.ticker,
+                    "asset_type": pos.asset_type,
+                    "quantity": pos.quantity,
+                    "avg_cost": pos.avg_cost,
+                    "current_price": pos.current_price,
+                    "market_value": pos.market_value,
+                    "unrealized_profit": pos.unrealized_profit,
+                    "unrealized_profit_pct": pos.unrealized_profit_pct,
+                    "daily_change": pos.daily_change,
+                    "daily_change_pct": pos.daily_change_pct,
+                }
+                for pos in portfolio
+            ])
+
+            def style_gain_loss(val):
+                if pd.isna(val):
+                    return ""
+                if val > 0:
+                    return "color: #22c55e; font-weight: bold;"  # Soft Green
+                elif val < 0:
+                    return "color: #ef4444; font-weight: bold;"  # Soft Red
+                return ""
+
+            target_cols = [
+                "unrealized_profit",
+                "unrealized_profit_pct",
+                "daily_change",
+                "daily_change_pct",
+            ]
+            
+            styled_df = df_assets.style.map(style_gain_loss, subset=target_cols)
+
+            st.dataframe(
+                styled_df,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "ticker": st.column_config.TextColumn("Ticker"),
+                    "asset_type": st.column_config.TextColumn("Type"),
+                    "quantity": st.column_config.NumberColumn("Quantity", format="%.4f"),
+                    "avg_cost": st.column_config.NumberColumn("Avg Cost", format="%.2f PLN"),
+                    "current_price": st.column_config.NumberColumn("Current Price", format="%.2f PLN"),
+                    "market_value": st.column_config.NumberColumn("Market Value", format="%.2f PLN"),
+                    "unrealized_profit": st.column_config.NumberColumn("Unrealized Profit", format="%.2f PLN"),
+                    "unrealized_profit_pct": st.column_config.NumberColumn("% Unrealized Profit", format="%.4f%%"),
+                    "daily_change": st.column_config.NumberColumn("Daily Change", format="%.2f PLN"),
+                    "daily_change_pct": st.column_config.NumberColumn("% Daily Change", format="%.4f%%"),
+                }
+            )
+        else:
+            st.info("No assets found. Click 'Add Asset' or import a broker statement to get started!")
+
+with tab3:
     with Session(engine) as session:
         assets = session.exec(select(tables.Asset)).all()
         asset_map = {a.ticker: a.id for a in assets}
